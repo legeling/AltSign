@@ -10,15 +10,179 @@
 
 #import "NSError+ALTErrors.h"
 
+#import <CoreFoundation/CoreFoundation.h>
+
 #include "zip.h"
 #include "unzip.h"
 
 int ALTReadBufferSize = 8192;
-int ALTMaxFilenameLength = 512;
 char ALTDirectoryDeliminator = '/';
 
 #define READ_BUFFER_SIZE 8192
 #define MAX_FILENAME 512
+
+static const uLong ALTZipUTF8FilenameFlag = 1 << 11;
+static const uint16_t ALTZipUnicodePathExtraFieldIdentifier = 0x7075;
+
+static uint16_t ALTReadUInt16LittleEndian(const uint8_t *bytes)
+{
+    return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+}
+
+static uint32_t ALTReadUInt32LittleEndian(const uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] |
+           ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) |
+           ((uint32_t)bytes[3] << 24);
+}
+
+static NSString *ALTUnicodeFilenameFromExtraField(NSData *filenameData, NSData *extraFieldData)
+{
+    const uint8_t *extraBytes = extraFieldData.bytes;
+    NSUInteger offset = 0;
+
+    while (offset + 4 <= extraFieldData.length)
+    {
+        uint16_t identifier = ALTReadUInt16LittleEndian(extraBytes + offset);
+        uint16_t fieldLength = ALTReadUInt16LittleEndian(extraBytes + offset + 2);
+        offset += 4;
+
+        if (fieldLength > extraFieldData.length - offset)
+        {
+            return nil;
+        }
+
+        if (identifier == ALTZipUnicodePathExtraFieldIdentifier && fieldLength >= 5)
+        {
+            const uint8_t *fieldBytes = extraBytes + offset;
+            uint32_t expectedCRC = ALTReadUInt32LittleEndian(fieldBytes + 1);
+            uLong actualCRC = crc32(0L, Z_NULL, 0);
+            actualCRC = crc32(actualCRC, filenameData.bytes, (uInt)filenameData.length);
+
+            if (fieldBytes[0] == 1 && expectedCRC == (uint32_t)actualCRC)
+            {
+                NSData *unicodeFilenameData = [NSData dataWithBytes:fieldBytes + 5 length:fieldLength - 5];
+                NSString *filename = [[NSString alloc] initWithData:unicodeFilenameData encoding:NSUTF8StringEncoding];
+                if (filename.length > 0)
+                {
+                    return filename;
+                }
+            }
+        }
+
+        offset += fieldLength;
+    }
+
+    return nil;
+}
+
+static NSDictionary *ALTLegacyFilenameEncodingOptions(void)
+{
+    static NSDictionary *options;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSArray<NSNumber *> *legacyEncodings = @[
+            @(CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingGB_18030_2000)),
+            @(CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingDOSChineseSimplif)),
+            @(CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingBig5)),
+            @(CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingDOSChineseTrad)),
+            @(NSShiftJISStringEncoding),
+            @(CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingEUC_KR)),
+            @(CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingDOSLatinUS)),
+        ];
+
+        options = @{
+            NSStringEncodingDetectionSuggestedEncodingsKey: legacyEncodings,
+            NSStringEncodingDetectionUseOnlySuggestedEncodingsKey: @YES,
+            NSStringEncodingDetectionAllowLossyKey: @NO,
+            NSStringEncodingDetectionFromWindowsKey: @YES,
+        };
+    });
+
+    return options;
+}
+
+static NSString *ALTDecodeZipFilename(NSData *filenameData, NSData *extraFieldData, uLong flags)
+{
+    if (filenameData.length == 0)
+    {
+        return nil;
+    }
+
+    if ((flags & ALTZipUTF8FilenameFlag) != 0)
+    {
+        NSString *filename = [[NSString alloc] initWithData:filenameData encoding:NSUTF8StringEncoding];
+        if (filename.length > 0)
+        {
+            return filename;
+        }
+    }
+
+    NSString *unicodeFilename = ALTUnicodeFilenameFromExtraField(filenameData, extraFieldData);
+    if (unicodeFilename.length > 0)
+    {
+        return unicodeFilename;
+    }
+
+    // Some IPA creators write UTF-8 filenames without setting ZIP's UTF-8 flag.
+    NSString *filename = [[NSString alloc] initWithData:filenameData encoding:NSUTF8StringEncoding];
+    if (filename.length > 0)
+    {
+        return filename;
+    }
+
+    BOOL usedLossyConversion = NO;
+    [NSString stringEncodingForData:filenameData
+                    encodingOptions:ALTLegacyFilenameEncodingOptions()
+                    convertedString:&filename
+                usedLossyConversion:&usedLossyConversion];
+
+    return !usedLossyConversion && filename.length > 0 ? filename : nil;
+}
+
+static NSString *ALTCurrentZipFilename(unzFile zipFile, unz_file_info *info)
+{
+    if (unzGetCurrentFileInfo(zipFile, info, NULL, 0, NULL, 0, NULL, 0) != UNZ_OK)
+    {
+        return nil;
+    }
+
+    NSMutableData *filenameData = [NSMutableData dataWithLength:info->size_filename];
+    NSMutableData *extraFieldData = [NSMutableData dataWithLength:info->size_file_extra];
+
+    if (unzGetCurrentFileInfo(zipFile,
+                              info,
+                              filenameData.mutableBytes,
+                              info->size_filename,
+                              extraFieldData.mutableBytes,
+                              info->size_file_extra,
+                              NULL,
+                              0) != UNZ_OK)
+    {
+        return nil;
+    }
+
+    return ALTDecodeZipFilename(filenameData, extraFieldData, info->flag);
+}
+
+static BOOL ALTIsSafeArchivePath(NSString *filename)
+{
+    if (filename.length == 0 || filename.isAbsolutePath)
+    {
+        return NO;
+    }
+
+    for (NSString *component in [filename componentsSeparatedByString:@"/"])
+    {
+        if ([component isEqualToString:@".."])
+        {
+            return NO;
+        }
+    }
+
+    return YES;
+}
 
 @implementation NSFileManager (Zip)
 
@@ -40,7 +204,7 @@ char ALTDirectoryDeliminator = '/';
         return NO;
     }
     
-    FILE *outputFile = nil;
+    __block FILE *outputFile = nil;
     char buffer[ALTReadBufferSize];
     
     void (^finish)(void) = ^{
@@ -65,20 +229,19 @@ char ALTDirectoryDeliminator = '/';
     // Calculate total uncompressed size for accurate progress reporting.
     int64_t uncompressedSize = 0;
     
-    for (int i = 0; i < zipInfo.number_entry; i++)
+    for (uLong i = 0; i < zipInfo.number_entry; i++)
     {
         unz_file_info info;
-        char cFilename[ALTMaxFilenameLength];
-        
-        if (unzGetCurrentFileInfo(zipFile, &info, cFilename, ALTMaxFilenameLength, NULL, 0, NULL, 0) != UNZ_OK)
+        NSString *filename = ALTCurrentZipFilename(zipFile, &info);
+
+        if (filename == nil || !ALTIsSafeArchivePath(filename))
         {
             *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadUnknownError userInfo:@{NSURLErrorKey: archiveURL}];
             
             finish();
             return NO;
         }
-        
-        NSString *filename = [[NSString alloc] initWithCString:cFilename encoding:NSUTF8StringEncoding];
+
         if (![filename hasPrefix:@"__MACOSX"] && [filename characterAtIndex:filename.length - 1] != ALTDirectoryDeliminator)
         {
             uncompressedSize += info.uncompressed_size;
@@ -106,20 +269,19 @@ char ALTDirectoryDeliminator = '/';
     
     progress.totalUnitCount = uncompressedSize;
     
-    for (int i = 0; i < zipInfo.number_entry; i++)
+    for (uLong i = 0; i < zipInfo.number_entry; i++)
     {
         unz_file_info info;
-        char cFilename[ALTMaxFilenameLength];
-        
-        if (unzGetCurrentFileInfo(zipFile, &info, cFilename, ALTMaxFilenameLength, NULL, 0, NULL, 0) != UNZ_OK)
+        NSString *filename = ALTCurrentZipFilename(zipFile, &info);
+
+        if (filename == nil || !ALTIsSafeArchivePath(filename))
         {
             *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadUnknownError userInfo:@{NSURLErrorKey: archiveURL}];
             
             finish();
             return NO;
         }
-        
-        NSString *filename = [[NSString alloc] initWithCString:cFilename encoding:NSUTF8StringEncoding];
+
         if ([filename hasPrefix:@"__MACOSX"])
         {
             if (i + 1 < zipInfo.number_entry)
@@ -156,6 +318,7 @@ char ALTDirectoryDeliminator = '/';
             if (directoryError != nil)
             {
                 *error = directoryError;
+                finish();
                 return NO;
             }
         }
@@ -177,6 +340,7 @@ char ALTDirectoryDeliminator = '/';
                 if (directoryError != nil)
                 {
                     *error = directoryError;
+                    finish();
                     return NO;
                 }
             }
@@ -451,8 +615,35 @@ char ALTDirectoryDeliminator = '/';
         }
     }
     
-    if (zipOpenNewFileInZip(*zipFile, filename.fileSystemRepresentation, &fileInfo,
-                            NULL, 0, NULL, 0, NULL, Z_DEFLATED, Z_DEFAULT_COMPRESSION) != ZIP_OK)
+    NSData *filenameData = [filename dataUsingEncoding:NSUTF8StringEncoding];
+    if (filenameData == nil)
+    {
+        *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteInapplicableStringEncodingError userInfo:@{NSFilePathErrorKey: filename}];
+        return NO;
+    }
+
+    NSMutableData *nullTerminatedFilenameData = [filenameData mutableCopy];
+    uint8_t nullTerminator = 0;
+    [nullTerminatedFilenameData appendBytes:&nullTerminator length:1];
+
+    if (zipOpenNewFileInZip4(*zipFile,
+                             nullTerminatedFilenameData.bytes,
+                             &fileInfo,
+                             NULL,
+                             0,
+                             NULL,
+                             0,
+                             NULL,
+                             Z_DEFLATED,
+                             Z_DEFAULT_COMPRESSION,
+                             0,
+                             -MAX_WBITS,
+                             8,
+                             Z_DEFAULT_STRATEGY,
+                             NULL,
+                             0,
+                             0,
+                             ALTZipUTF8FilenameFlag) != ZIP_OK)
     {
         zipCloseFileInZip(*zipFile);
         *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileWriteUnknownError userInfo:@{NSFilePathErrorKey: filename}];

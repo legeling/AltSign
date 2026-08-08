@@ -372,10 +372,11 @@ NS_ASSUME_NONNULL_END
     NSURL *URL = [NSURL URLWithString:@"ios/addAppId.action" relativeToURL:self.baseURL];
     
     NSMutableCharacterSet *allowedCharacters = [[NSCharacterSet asciiAlphanumericCharacterSet] mutableCopy];
-    [allowedCharacters formUnionWithCharacterSet:[NSCharacterSet whitespaceCharacterSet]];
+    [allowedCharacters addCharactersInString:@" "];
     
     NSString *sanitizedName = [name stringByFoldingWithOptions:NSDiacriticInsensitiveSearch locale:nil];
     sanitizedName = [[sanitizedName componentsSeparatedByCharactersInSet:[allowedCharacters invertedSet]] componentsJoinedByString:@""];
+    sanitizedName = [sanitizedName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     
     if (sanitizedName.length == 0)
     {
