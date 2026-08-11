@@ -53,19 +53,31 @@ ALTDeviceType ALTDeviceTypeFromUIDeviceFamily(NSInteger deviceFamily)
             return nil;
         }
         
-        NSString *name = infoDictionary[@"CFBundleDisplayName"] ?: infoDictionary[(NSString *)kCFBundleNameKey];
-        NSString *bundleIdentifier = infoDictionary[(NSString *)kCFBundleIdentifierKey];
+        id displayNameValue = infoDictionary[@"CFBundleDisplayName"];
+        id bundleNameValue = infoDictionary[(NSString *)kCFBundleNameKey];
+        id bundleIdentifierValue = infoDictionary[(NSString *)kCFBundleIdentifierKey];
+
+        NSString *name = [displayNameValue isKindOfClass:[NSString class]] ? displayNameValue : nil;
+        if (name.length == 0 && [bundleNameValue isKindOfClass:[NSString class]])
+        {
+            name = bundleNameValue;
+        }
+
+        NSString *bundleIdentifier = [bundleIdentifierValue isKindOfClass:[NSString class]] ? bundleIdentifierValue : nil;
                 
-        if (name == nil || bundleIdentifier == nil)
+        if (name.length == 0 || bundleIdentifier.length == 0)
         {
             return nil;
         }
         
         // These technically can be nil, but in practice every app should have a version and build version.
-        NSString *version = infoDictionary[@"CFBundleShortVersionString"] ?: @"1.0";
-        NSString *buildVersion = infoDictionary[(NSString *)kCFBundleVersionKey] ?: @"1";
+        id versionValue = infoDictionary[@"CFBundleShortVersionString"];
+        id buildVersionValue = infoDictionary[(NSString *)kCFBundleVersionKey];
+        NSString *version = [versionValue isKindOfClass:[NSString class]] ? versionValue : @"1.0";
+        NSString *buildVersion = [buildVersionValue isKindOfClass:[NSString class]] ? buildVersionValue : @"1";
         
-        NSString *minimumVersionString = infoDictionary[@"MinimumOSVersion"] ?: @"1.0";
+        id minimumVersionValue = infoDictionary[@"MinimumOSVersion"];
+        NSString *minimumVersionString = [minimumVersionValue isKindOfClass:[NSString class]] ? minimumVersionValue : @"1.0";
         NSArray *versionComponents = [minimumVersionString componentsSeparatedByString:@"."];
         
         NSInteger majorVersion = [versionComponents.firstObject integerValue];
@@ -87,8 +99,13 @@ ALTDeviceType ALTDeviceTypeFromUIDeviceFamily(NSInteger deviceFamily)
         }
         else if ([deviceFamilies isKindOfClass:[NSArray class]] && deviceFamilies.count > 0)
         {
-            for (NSNumber *deviceFamily in deviceFamilies)
+            for (id deviceFamily in deviceFamilies)
             {
+                if (![deviceFamily isKindOfClass:[NSNumber class]])
+                {
+                    continue;
+                }
+
                 NSInteger rawDeviceFamily = [deviceFamily integerValue];
                 supportedDeviceTypes |= ALTDeviceTypeFromUIDeviceFamily(rawDeviceFamily);
             }
@@ -98,8 +115,9 @@ ALTDeviceType ALTDeviceTypeFromUIDeviceFamily(NSInteger deviceFamily)
             supportedDeviceTypes = ALTDeviceTypeiPhone;
         }
         
-        NSDictionary *icons = infoDictionary[@"CFBundleIcons"];
-        NSDictionary *primaryIcon = icons[@"CFBundlePrimaryIcon"];
+        id iconsValue = infoDictionary[@"CFBundleIcons"];
+        NSDictionary *icons = [iconsValue isKindOfClass:[NSDictionary class]] ? iconsValue : nil;
+        id primaryIcon = icons[@"CFBundlePrimaryIcon"];
         
         NSString *iconName = nil;
         
@@ -109,16 +127,22 @@ ALTDeviceType ALTDeviceTypeFromUIDeviceFamily(NSInteger deviceFamily)
         }
         else
         {
-            NSArray *iconFiles = primaryIcon[@"CFBundleIconFiles"];
-            if (iconFiles == nil)
+            id iconFilesValue = [primaryIcon isKindOfClass:[NSDictionary class]] ? primaryIcon[@"CFBundleIconFiles"] : nil;
+            if (![iconFilesValue isKindOfClass:[NSArray class]])
             {
-                iconFiles = infoDictionary[@"CFBundleIconFiles"];
+                iconFilesValue = infoDictionary[@"CFBundleIconFiles"];
             }
-            
-            iconName = [iconFiles lastObject];
-            if (iconName == nil)
+
+            if ([iconFilesValue isKindOfClass:[NSArray class]])
             {
-                iconName = infoDictionary[@"CFBundleIconFile"];
+                id lastIconValue = [(NSArray *)iconFilesValue lastObject];
+                iconName = [lastIconValue isKindOfClass:[NSString class]] ? lastIconValue : nil;
+            }
+
+            if (iconName.length == 0)
+            {
+                id legacyIconValue = infoDictionary[@"CFBundleIconFile"];
+                iconName = [legacyIconValue isKindOfClass:[NSString class]] ? legacyIconValue : nil;
             }
         }
         
