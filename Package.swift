@@ -173,9 +173,6 @@ let package = Package(
             cSettings: [
                 .headerSearchPath("Dependencies/minizip"),
                 .define("CORECRYPTO_DONOT_USE_TRANSPARENT_UNION=1"),
-            ],
-            swiftSettings: [
-                .define("MARKETPLACE")
             ]
         )
     ],
