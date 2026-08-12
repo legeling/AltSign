@@ -15,6 +15,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef void (^ALTSigningProgressHandler)(NSString *detail);
+
 @interface ALTSigner : NSObject
 
 @property (nonatomic) ALTTeam *team;
@@ -23,6 +25,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithTeam:(ALTTeam *)team certificate:(ALTCertificate *)certificate;
 
 - (NSProgress *)signAppAtURL:(NSURL *)appURL provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles completionHandler:(void (^)(BOOL success, NSError *_Nullable error))completionHandler;
+
+- (NSProgress *)signAppAtURL:(NSURL *)appURL
+        provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
+             progressHandler:(nullable ALTSigningProgressHandler)progressHandler
+           completionHandler:(void (^)(BOOL success, NSError *_Nullable error))completionHandler;
 
 @end
 

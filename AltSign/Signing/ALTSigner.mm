@@ -19,6 +19,7 @@
 #import "alt_ldid.hpp"
 
 #include <string>
+#include <stdexcept>
 
 #include <openssl/pkcs12.h>
 #include <openssl/pem.h>
@@ -181,17 +182,36 @@ std::string CertificatesContent(ALTCertificate *altCertificate)
 struct ALTProgress: public ldid::Progress
 {
     NSProgress *progress = nil;
+    ALTSigningProgressHandler progressHandler = nil;
     
     virtual void operator()(const std::string &value) const
     {
         this->progress.completedUnitCount += 1;
+
+        if (this->progressHandler == nil || value.empty())
+        {
+            return;
+        }
+
+        NSString *detail = [[NSString alloc] initWithBytes:value.data() length:value.size() encoding:NSUTF8StringEncoding];
+        if (detail.length == 0)
+        {
+            return;
+        }
+
+        // ldid reports every resource. Persist only bundle and Mach-O checkpoints so
+        // diagnostics stay useful without writing the journal for every asset.
+        if ([detail hasSuffix:@"*"] || ([detail containsString:@" ("] && [detail hasSuffix:@")"]))
+        {
+            this->progressHandler(detail);
+        }
     }
     
     virtual void operator()(double value) const
     {
     }
     
-    ALTProgress(NSProgress *progress) : progress(progress)
+    ALTProgress(NSProgress *progress, ALTSigningProgressHandler progressHandler) : progress(progress), progressHandler([progressHandler copy])
     {
     }
 };
@@ -216,7 +236,15 @@ struct ALTProgress: public ldid::Progress
 }
 
 - (NSProgress *)signAppAtURL:(NSURL *)appURL provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles completionHandler:(void (^)(BOOL success, NSError *error))completionHandler
-{    
+{
+    return [self signAppAtURL:appURL provisioningProfiles:profiles progressHandler:nil completionHandler:completionHandler];
+}
+
+- (NSProgress *)signAppAtURL:(NSURL *)appURL
+        provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
+             progressHandler:(ALTSigningProgressHandler)progressHandler
+           completionHandler:(void (^)(BOOL success, NSError *error))completionHandler
+{
     NSProgress *progress = [NSProgress discreteProgressWithTotalUnitCount:1];
     
     NSURL *ipaURL = nil;
@@ -440,13 +468,22 @@ struct ALTProgress: public ldid::Progress
         {
             // Sign application
             NSString *filePath = [application.fileURL.path.stringByStandardizingPath stringByAppendingString:@"/"];
-            ldid::DiskFolder appBundle(filePath.UTF8String);
+            const char *fileSystemPath = filePath.fileSystemRepresentation;
+            if (fileSystemPath == NULL)
+            {
+                throw std::runtime_error("app bundle path cannot be represented by the file system");
+            }
+            ldid::DiskFolder appBundle(fileSystemPath);
             
             std::string key = CertificatesContent(self.certificate);
-            ALTProgress altProgress(progress);
+            ALTProgress altProgress(progress, progressHandler);
             
             ldid::Sign("", appBundle, key, "", ldid::fun([&](const std::string &path, const std::string &binaryEntitlements) -> std::string {
-                NSString *filename = [NSString stringWithCString:path.c_str() encoding:NSUTF8StringEncoding];
+                NSString *filename = [[NSString alloc] initWithBytes:path.data() length:path.size() encoding:NSUTF8StringEncoding];
+                if (filename == nil)
+                {
+                    throw std::runtime_error("embedded bundle path is not valid UTF-8");
+                }
                 
                 NSURL *fileURL = nil;
                 
@@ -462,7 +499,18 @@ struct ALTProgress: public ldid::Progress
                 NSURL *resolvedURL = [fileURL URLByResolvingSymlinksInPath];
                 
                 NSString *entitlements = entitlementsByFileURL[resolvedURL];
-                return entitlements.UTF8String;
+                if (entitlements == nil)
+                {
+                    throw std::runtime_error("embedded bundle is missing prepared entitlements or a provisioning profile");
+                }
+
+                const char *entitlementsString = entitlements.UTF8String;
+                if (entitlementsString == NULL)
+                {
+                    throw std::runtime_error("prepared entitlements are not valid UTF-8");
+                }
+
+                return std::string(entitlementsString);
             }), altProgress);
             
             // Dispatch after to allow time to finish signing binary.
