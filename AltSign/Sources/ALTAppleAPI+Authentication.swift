@@ -449,12 +449,26 @@ private extension ALTAppleAPI
             let dataTask = self.session.dataTask(with: request) { (data, response, error) in
                 do
                 {
-                    guard let data = data else { throw error ?? ALTAppleAPIError.unknown() }
+                    if let error = error { throw error }
+                    guard let data = data else { throw ALTAppleAPIError.unknown() }
                     
-                    guard let responseDictionary = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                          let dictionary = responseDictionary["Response"] as? [String: Any],
+                    let responseDictionary: [String: Any]
+                    do
+                    {
+                        guard let propertyList = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+                        else { throw URLError(.badServerResponse) }
+                        responseDictionary = propertyList
+                    }
+                    catch
+                    {
+                        // Apple and network intermediaries can return an HTML error page. Surface
+                        // this as an authentication failure without retaining or logging its body.
+                        throw ALTAppleAPIError(.authenticationHandshakeFailed, userInfo: [NSUnderlyingErrorKey: error])
+                    }
+
+                    guard let dictionary = responseDictionary["Response"] as? [String: Any],
                           let status = dictionary["Status"] as? [String: Any]
-                    else { throw URLError(.badServerResponse) }
+                    else { throw ALTAppleAPIError(.authenticationHandshakeFailed) }
                                         
                     let errorCode = status["ec"] as? Int ?? 0
                     guard errorCode != 0 else { return completionHandler(.success(dictionary)) }
