@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Darwin
 
 @_exported import CAltSign
 import CAltSign.Private
@@ -421,6 +422,28 @@ private extension ALTAppleAPI
 
 private extension ALTAppleAPI
 {
+    var authenticationUserAgent: String
+    {
+        var components = ["akd/1.0"]
+
+        let cfNetworkBundle = Bundle(identifier: "com.apple.CFNetwork") ?? Bundle(path: "/System/Library/Frameworks/CFNetwork.framework")
+        if let version = cfNetworkBundle?.object(forInfoDictionaryKey: kCFBundleVersionKey as String) as? String, !version.isEmpty
+        {
+            components.append("CFNetwork/\(version)")
+        }
+
+        var systemInfo = utsname()
+        if uname(&systemInfo) == 0
+        {
+            let release = withUnsafePointer(to: &systemInfo.release) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+            }
+            components.append("Darwin/\(release)")
+        }
+
+        return components.joined(separator: " ")
+    }
+
     func sendAuthenticationRequest(parameters requestParameters: [String: Any], anisetteData: ALTAnisetteData, completionHandler: @escaping (Result<[String: Any], Error>) -> Void)
     {
         do
@@ -436,7 +459,7 @@ private extension ALTAppleAPI
                 "Content-Type": "text/x-xml-plist",
                 "X-MMe-Client-Info": anisetteData.deviceDescription,
                 "Accept": "*/*",
-                "User-Agent": "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
+                "User-Agent": self.authenticationUserAgent
             ]
             
             let bodyData = try PropertyListSerialization.data(fromPropertyList: parameters, format: .xml, options: 0)
@@ -514,7 +537,7 @@ private extension ALTAppleAPI
             "Content-Type": "application/x-plist",
             "User-Agent": "Xcode",
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
-            "X-Xcode-Version": "11.2 (11B41)",
+            "X-Xcode-Version": ALTAppleXcodeVersion,
             "X-Apple-Identity-Token": encodedIdentityToken,
             "X-Apple-I-MD-M": anisetteData.machineID,
             "X-Apple-I-MD": anisetteData.oneTimePassword,

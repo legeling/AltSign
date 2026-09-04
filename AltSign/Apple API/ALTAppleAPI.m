@@ -22,6 +22,8 @@ NSString *const ALTAuthenticationProtocolVersion = @"A1234";
 NSString *const ALTProtocolVersion = @"QH65B2";
 NSString *const ALTAppIDKey = @"ba2ec180e6ca6e6c6a542255453b24d6e6e5b2be0cc48bc1b0d8ad64cfe0228f";
 NSString *const ALTClientID = @"XABBG36SBA";
+NSString *const ALTAppleXcodeVersion = @"27.0 (27A5252f)";
+NSString *const ALTAppleXcodeBundleVersion = @"25183.54.10";
 
 NS_ASSUME_NONNULL_END
 
@@ -748,7 +750,7 @@ NS_ASSUME_NONNULL_END
         @"Accept": @"text/x-xml-plist",
         @"Accept-Language": @"en-us",
         @"X-Apple-App-Info": @"com.apple.gs.xcode.auth",
-        @"X-Xcode-Version": @"11.2 (11B41)",
+        @"X-Xcode-Version": ALTAppleXcodeVersion,
         @"X-Apple-I-Identity-Id": session.dsid,
         @"X-Apple-GS-Token": session.authToken,
         @"X-Apple-I-MD-M": session.anisetteData.machineID,
@@ -824,7 +826,7 @@ NS_ASSUME_NONNULL_END
         @"Accept": @"application/vnd.api+json",
         @"Accept-Language": @"en-us",
         @"X-Apple-App-Info": @"com.apple.gs.xcode.auth",
-        @"X-Xcode-Version": @"11.2 (11B41)",
+        @"X-Xcode-Version": ALTAppleXcodeVersion,
         @"X-HTTP-Method-Override": HTTPMethodOverride,
         @"X-Apple-I-Identity-Id": session.dsid,
         @"X-Apple-GS-Token": session.authToken,

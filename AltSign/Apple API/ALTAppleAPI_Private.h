@@ -10,6 +10,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT NSString *const ALTAppleXcodeVersion;
+FOUNDATION_EXPORT NSString *const ALTAppleXcodeBundleVersion;
+
 @interface ALTAppleAPI ()
 
 @property (nonatomic, readonly) NSURLSession *session;
