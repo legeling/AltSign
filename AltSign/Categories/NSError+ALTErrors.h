@@ -23,6 +23,9 @@ typedef NS_ERROR_ENUM(AltSignErrorDomain, ALTError)
     ALTErrorMissingAppBundle,
     ALTErrorMissingInfoPlist,
     ALTErrorMissingProvisioningProfile,
+    ALTErrorMissingAppleRootCertificate,
+    ALTErrorInvalidCertificate,
+    ALTErrorInvalidProvisioningProfile,
 };
 
 typedef NS_ERROR_ENUM(ALTAppleAPIErrorDomain, ALTAppleAPIError)
@@ -58,6 +61,7 @@ typedef NS_ERROR_ENUM(ALTAppleAPIErrorDomain, ALTAppleAPIError)
     ALTAppleAPIErrorAuthenticationHandshakeFailed = 3020,
     
     ALTAppleAPIErrorInvalidAnisetteData = 3021,
+    ALTAppleAPIErrorInvalidResponse = 3022,
 };
 
 NS_ASSUME_NONNULL_BEGIN
