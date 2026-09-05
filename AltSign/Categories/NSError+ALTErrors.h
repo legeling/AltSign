@@ -15,6 +15,9 @@ extern NSErrorDomain const ALTUnderlyingAppleAPIErrorDomain;
 extern NSErrorUserInfoKey const ALTSourceFileErrorKey;
 extern NSErrorUserInfoKey const ALTSourceLineErrorKey;
 extern NSErrorUserInfoKey const ALTAppNameErrorKey;
+extern NSErrorUserInfoKey const ALTAppleAPIRequestOperationErrorKey;
+extern NSErrorUserInfoKey const ALTAppleAPIHTTPStatusCodeErrorKey;
+extern NSErrorUserInfoKey const ALTAppleAPIResponseMIMETypeErrorKey;
 
 typedef NS_ERROR_ENUM(AltSignErrorDomain, ALTError)
 {

@@ -15,6 +15,9 @@ NSErrorDomain const ALTUnderlyingAppleAPIErrorDomain = @"Apple.APIError";
 NSErrorUserInfoKey const ALTSourceFileErrorKey = @"ALTSourceFile";
 NSErrorUserInfoKey const ALTSourceLineErrorKey = @"ALTSourceLine";
 NSErrorUserInfoKey const ALTAppNameErrorKey = @"appName";
+NSErrorUserInfoKey const ALTAppleAPIRequestOperationErrorKey = @"ALTAppleAPIRequestOperation";
+NSErrorUserInfoKey const ALTAppleAPIHTTPStatusCodeErrorKey = @"ALTAppleAPIHTTPStatusCode";
+NSErrorUserInfoKey const ALTAppleAPIResponseMIMETypeErrorKey = @"ALTAppleAPIResponseMIMEType";
 
 @implementation NSError (ALTError)
 
@@ -227,7 +230,7 @@ NSErrorUserInfoKey const ALTAppNameErrorKey = @"appName";
             return NSLocalizedString(@"Incorrect verification code.", @"");
 
         case ALTAppleAPIErrorAuthenticationHandshakeFailed:
-            return NSLocalizedString(@"Apple's authentication service returned a response that AltForge Server could not read.", @"");
+            return NSLocalizedString(@"The secure sign-in with Apple could not be completed.", @"");
 
         case ALTAppleAPIErrorInvalidAnisetteData:
             return NSLocalizedString(@"This Mac's Apple authentication data is missing or invalid.", @"");

@@ -76,7 +76,7 @@ public extension ALTAppleAPI
                           let salt = responseDictionary["s"] as? Data,
                           let iterations = responseDictionary["i"] as? Int,
                           let serverPublicKey = responseDictionary["B"] as? Data
-                    else { throw URLError(.badServerResponse) }
+                    else { throw self.authenticationResponseError(operation: "init", underlyingError: URLError(.badServerResponse)) }
                     
                     context.salt = salt
                     context.serverPublicKey = serverPublicKey
@@ -85,7 +85,7 @@ public extension ALTAppleAPI
                     let isHexadecimal = (sp == "s2k_fo")                    
                     
                     guard let verificationMessage = context.makeVerificationMessage(iterations: iterations, isHexadecimal: isHexadecimal) else {
-                        throw ALTAppleAPIError(.authenticationHandshakeFailed)
+                        throw self.authenticationResponseError(operation: "complete")
                     }
                     
                     let parameters = [
@@ -104,15 +104,15 @@ public extension ALTAppleAPI
                             guard let serverVerificationMessage = responseDictionary["M2"] as? Data,
                                   let serverDictionary = responseDictionary["spd"] as? Data,
                                   let statusDictionary = responseDictionary["Status"] as? [String: Any]
-                            else { throw URLError(.badServerResponse) }
+                            else { throw self.authenticationResponseError(operation: "complete", underlyingError: URLError(.badServerResponse)) }
                             
-                            guard context.verifyServerVerificationMessage(serverVerificationMessage) else { throw ALTAppleAPIError(.authenticationHandshakeFailed) }
-                            guard let decryptedData = serverDictionary.decryptedCBC(context: context) else { throw ALTAppleAPIError(.authenticationHandshakeFailed) }
+                            guard context.verifyServerVerificationMessage(serverVerificationMessage) else { throw self.authenticationResponseError(operation: "complete") }
+                            guard let decryptedData = serverDictionary.decryptedCBC(context: context) else { throw self.authenticationResponseError(operation: "complete.decrypted") }
                             
-                            guard let decryptedDictionary = try PropertyListSerialization.propertyList(from: decryptedData, format: nil) as? [String: Any],
-                                  let dsid = decryptedDictionary["adsid"] as? String,
+                            let decryptedDictionary = try self.authenticationDictionary(from: decryptedData, operation: "complete.decrypted")
+                            guard let dsid = decryptedDictionary["adsid"] as? String,
                                   let idmsToken = decryptedDictionary["GsIdmsToken"] as? String
-                            else { throw URLError(.badServerResponse) }
+                            else { throw self.authenticationResponseError(operation: "complete.decrypted", underlyingError: URLError(.badServerResponse)) }
                             
                             context.dsid = dsid
                             
@@ -146,12 +146,12 @@ public extension ALTAppleAPI
                             default:
                                 guard let sessionKey = decryptedDictionary["sk"] as? Data,
                                       let c = decryptedDictionary["c"] as? Data
-                                else { throw URLError(.badServerResponse) }
+                                else { throw self.authenticationResponseError(operation: "complete.decrypted", underlyingError: URLError(.badServerResponse)) }
                                 
                                 context.sessionKey = sessionKey
                                 
                                 let app = "com.apple.gs.xcode.auth"
-                                guard let checksum = context.makeChecksum(appName: app) else { throw ALTAppleAPIError(.authenticationHandshakeFailed) }
+                                guard let checksum = context.makeChecksum(appName: app) else { throw self.authenticationResponseError(operation: "apptokens") }
                                 
                                 let parameters = [
                                     "app": [app],
@@ -209,17 +209,15 @@ private extension ALTAppleAPI
             {
                 let responseDictionary = try result.get()
                 
-                guard let encryptedToken = responseDictionary["et"] as? Data else { throw URLError(.badServerResponse) }
-                guard let token = encryptedToken.decryptedGCM(context: context) else { throw ALTAppleAPIError(.authenticationHandshakeFailed) }
+                guard let encryptedToken = responseDictionary["et"] as? Data else { throw self.authenticationResponseError(operation: "apptokens", underlyingError: URLError(.badServerResponse)) }
+                guard let token = encryptedToken.decryptedGCM(context: context) else { throw self.authenticationResponseError(operation: "apptokens.decrypted") }
                 
-                guard let tokensDictionary = try PropertyListSerialization.propertyList(from: token, format: nil) as? [String: Any] else {
-                    throw URLError(.badServerResponse)
-                }
+                let tokensDictionary = try self.authenticationDictionary(from: token, operation: "apptokens.decrypted")
                 
                 guard let appTokens = tokensDictionary["t"] as? [String: Any],
                       let tokens = appTokens[app] as? [String: Any],
                       let authToken = tokens["token"] as? String
-                else { throw URLError(.badServerResponse) }
+                else { throw self.authenticationResponseError(operation: "apptokens.decrypted", underlyingError: URLError(.badServerResponse)) }
                 
                 completionHandler(.success(authToken))
             }
@@ -245,6 +243,7 @@ private extension ALTAppleAPI
             do
             {
                 guard error == nil else { throw error! }
+                try self.validateAuthenticationHTTP(response, operation: "trusted-device.request")
                 
                 func responseHandler(verificationCode: String?)
                 {
@@ -258,24 +257,12 @@ private extension ALTAppleAPI
                         let verifyCodeTask = self.session.dataTask(with: request) { (data, response, error) in
                             do
                             {
-                                guard let data = data else { throw error ?? ALTAppleAPIError.unknown() }
-                                
-                                guard let responseDictionary = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
-                                    throw URLError(.badServerResponse)
+                                if let error = error { throw error }
+                                guard let data = data else {
+                                    throw self.authenticationResponseError(operation: "trusted-device.verify", response: response)
                                 }
-                                
-                                let errorCode = responseDictionary["ec"] as? Int ?? 0
-                                guard errorCode != 0 else { return completionHandler(.success(())) }
-                                
-                                switch errorCode
-                                {
-                                case -21669: throw ALTAppleAPIError(.incorrectVerificationCode)
-                                default:
-                                    guard let errorDescription = responseDictionary["em"] as? String else { throw ALTAppleAPIError.unknown() }
-                                    
-                                    let localizedDescription = errorDescription + " (\(errorCode))"
-                                    throw NSError(domain: ALTUnderlyingAppleAPIErrorDomain, code: errorCode, userInfo: [NSLocalizedDescriptionKey: localizedDescription])
-                                }
+                                try self.validateTrustedDeviceResponse(from: data, response: response)
+                                completionHandler(.success(()))
                             }
                             catch
                             {
@@ -335,6 +322,7 @@ private extension ALTAppleAPI
             do
             {
                 guard error == nil else { throw error! }
+                try self.validateAuthenticationHTTP(response, operation: "sms.request")
                 
                 func responseHandler(verificationCode: String?)
                 {
@@ -361,11 +349,8 @@ private extension ALTAppleAPI
                             {
                                 guard error == nil else { throw error! }
                                                                 
-                                guard let httpResponse = response as? HTTPURLResponse,
-                                      httpResponse.statusCode == 200,
-                                      httpResponse.allHeaderFields.keys.contains("X-Apple-PE-Token") // PE token is included in headers if we sent correct verification code.
-                                else { throw ALTAppleAPIError(.incorrectVerificationCode) }
-                                
+                                try self.validateSMSVerificationResponse(response)
+
                                 completionHandler(.success(()))
                             }
                             catch
@@ -446,6 +431,8 @@ private extension ALTAppleAPI
 
     func sendAuthenticationRequest(parameters requestParameters: [String: Any], anisetteData: ALTAnisetteData, completionHandler: @escaping (Result<[String: Any], Error>) -> Void)
     {
+        let operation = Self.authenticationOperation(from: requestParameters)
+
         do
         {
             let requestURL = URL(string: "https://gsa.apple.com/grandslam/GsService2")!
@@ -473,39 +460,13 @@ private extension ALTAppleAPI
                 do
                 {
                     if let error = error { throw error }
-                    guard let data = data else { throw ALTAppleAPIError.unknown() }
-                    
-                    let responseDictionary: [String: Any]
-                    do
+                    guard let data = data else
                     {
-                        guard let propertyList = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-                        else { throw URLError(.badServerResponse) }
-                        responseDictionary = propertyList
-                    }
-                    catch
-                    {
-                        // Apple and network intermediaries can return an HTML error page. Surface
-                        // this as an authentication failure without retaining or logging its body.
-                        throw ALTAppleAPIError(.authenticationHandshakeFailed, userInfo: [NSUnderlyingErrorKey: error])
+                        throw self.authenticationResponseError(operation: operation, response: response, underlyingError: URLError(.badServerResponse))
                     }
 
-                    guard let dictionary = responseDictionary["Response"] as? [String: Any],
-                          let status = dictionary["Status"] as? [String: Any]
-                    else { throw ALTAppleAPIError(.authenticationHandshakeFailed) }
-                                        
-                    let errorCode = status["ec"] as? Int ?? 0
-                    guard errorCode != 0 else { return completionHandler(.success(dictionary)) }
-                    
-                    switch errorCode
-                    {
-                    case -20101, -22406: throw ALTAppleAPIError(.incorrectCredentials)
-                    case -22421: throw ALTAppleAPIError(.invalidAnisetteData)
-                    default:
-                        guard let errorDescription = status["em"] as? String else { throw ALTAppleAPIError.unknown() }
-                        
-                        let localizedDescription = errorDescription + " (\(errorCode))"
-                        throw NSError(domain: ALTUnderlyingAppleAPIErrorDomain, code: errorCode, userInfo: [NSLocalizedDescriptionKey: localizedDescription])
-                    }
+                    let dictionary = try self.authenticationServiceDictionary(from: data, operation: operation, response: response)
+                    completionHandler(.success(dictionary))
                 }
                 catch
                 {
@@ -517,10 +478,124 @@ private extension ALTAppleAPI
         }
         catch
         {
-            completionHandler(.failure(error))
+            completionHandler(.failure(self.authenticationResponseError(operation: "request.encoding", underlyingError: error)))
         }
     }
+
+}
+
+// Internal visibility lets regression tests exercise the production parser without a live account.
+extension ALTAppleAPI
+{
+
+    func validateAuthenticationHTTP(_ response: URLResponse?, operation: String) throws
+    {
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw self.authenticationResponseError(operation: operation, response: response, underlyingError: URLError(.badServerResponse))
+        }
+    }
+
+    func authenticationServiceDictionary(from data: Data, operation: String, response: URLResponse?) throws -> [String: Any]
+    {
+        let envelope = try self.authenticationDictionary(from: data, operation: operation, response: response)
+        guard let dictionary = envelope["Response"] as? [String: Any],
+              let status = dictionary["Status"] as? [String: Any],
+              let errorCode = status["ec"] as? Int
+        else { throw self.authenticationResponseError(operation: operation, response: response, underlyingError: URLError(.badServerResponse)) }
+
+        // Structured Apple errors take precedence over the HTTP status.
+        if errorCode != 0
+        {
+            switch errorCode
+            {
+            case -20101, -22406: throw ALTAppleAPIError(.incorrectCredentials)
+            case -22421: throw ALTAppleAPIError(.invalidAnisetteData)
+            default: throw NSError(domain: ALTUnderlyingAppleAPIErrorDomain, code: errorCode, userInfo: nil)
+            }
+        }
+        try self.validateAuthenticationHTTP(response, operation: operation)
+        return dictionary
+    }
+
+    func validateTrustedDeviceResponse(from data: Data, response: URLResponse?) throws
+    {
+        let dictionary = try self.authenticationDictionary(from: data, operation: "trusted-device.verify", response: response)
+        guard let code = dictionary["ec"] as? Int else {
+            throw self.authenticationResponseError(operation: "trusted-device.verify", response: response, underlyingError: URLError(.badServerResponse))
+        }
+        if code == -21669 { throw ALTAppleAPIError(.incorrectVerificationCode) }
+        if code != 0 { throw NSError(domain: ALTUnderlyingAppleAPIErrorDomain, code: code, userInfo: nil) }
+        try self.validateAuthenticationHTTP(response, operation: "trusted-device.verify")
+    }
+
+    func validateSMSVerificationResponse(_ response: URLResponse?) throws
+    {
+        try self.validateAuthenticationHTTP(response, operation: "sms.verify")
+        guard let http = response as? HTTPURLResponse,
+              let token = http.value(forHTTPHeaderField: "X-Apple-PE-Token"), !token.isEmpty else {
+            throw ALTAppleAPIError(.incorrectVerificationCode)
+        }
+    }
+
+    static func authenticationOperation(from requestParameters: [String: Any]) -> String
+    {
+        guard let operation = requestParameters["o"] as? String,
+              ["init", "complete", "apptokens"].contains(operation)
+        else { return "unknown" }
+
+        return operation
+    }
+
+    func authenticationDictionary(from data: Data, operation: String, response: URLResponse? = nil) throws -> [String: Any]
+    {
+        do
+        {
+            guard let dictionary = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+            else { throw URLError(.badServerResponse) }
+
+            return dictionary
+        }
+        catch
+        {
+            // Apple and network intermediaries can return HTML or malformed data. Keep only
+            // bounded transport metadata so diagnostics never retain or log the response body.
+            throw self.authenticationResponseError(operation: operation, response: response, underlyingError: error)
+        }
+    }
+
+    func authenticationResponseError(operation: String, response: URLResponse? = nil, underlyingError: Error? = nil) -> ALTAppleAPIError
+    {
+        var userInfo = [String: Any]()
+        let operations = ["init", "complete", "apptokens", "complete.decrypted", "apptokens.decrypted",
+                          "trusted-device.request", "trusted-device.verify", "sms.request", "sms.verify", "request.encoding"]
+        userInfo[ALTAppleAPIRequestOperationErrorKey] = operations.contains(operation) ? operation : "unknown"
+
+        if let httpResponse = response as? HTTPURLResponse
+        {
+            userInfo[ALTAppleAPIHTTPStatusCodeErrorKey] = NSNumber(value: httpResponse.statusCode)
+        }
+
+        if let mimeType = response?.mimeType?.lowercased(), !mimeType.isEmpty
+        {
+            let types = ["text/html", "application/xhtml+xml", "text/x-xml-plist", "application/x-plist",
+                         "application/x-apple-plist", "application/xml", "text/xml", "application/json"]
+            userInfo[ALTAppleAPIResponseMIMETypeErrorKey] = types.contains(mimeType) ? mimeType : "other"
+        }
+
+        if let underlyingError = underlyingError
+        {
+            // Foundation parser descriptions can include fragments of the response.
+            let error = underlyingError as NSError
+            userInfo[NSUnderlyingErrorKey] = NSError(domain: error.domain, code: error.code, userInfo: nil)
+        }
+
+        return ALTAppleAPIError(.authenticationHandshakeFailed, userInfo: userInfo)
+    }
     
+}
+
+private extension ALTAppleAPI
+{
     func makeTwoFactorCodeRequest(url: URL,
                                   dsid: String,
                                   idmsToken: String,
