@@ -7,7 +7,6 @@
 //
 
 import Foundation
-import Darwin
 
 @_exported import CAltSign
 import CAltSign.Private
@@ -409,24 +408,9 @@ private extension ALTAppleAPI
 {
     var authenticationUserAgent: String
     {
-        var components = ["akd/1.0"]
-
-        let cfNetworkBundle = Bundle(identifier: "com.apple.CFNetwork") ?? Bundle(path: "/System/Library/Frameworks/CFNetwork.framework")
-        if let version = cfNetworkBundle?.object(forInfoDictionaryKey: kCFBundleVersionKey as String) as? String, !version.isEmpty
-        {
-            components.append("CFNetwork/\(version)")
-        }
-
-        var systemInfo = utsname()
-        if uname(&systemInfo) == 0
-        {
-            let release = withUnsafePointer(to: &systemInfo.release) { pointer in
-                pointer.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
-            }
-            components.append("Darwin/\(release)")
-        }
-
-        return components.joined(separator: " ")
+        // Use the compatibility identity tested in upstream AltSign PR #47.
+        // Updating only CFNetwork/Darwin leaves the rejected akd client family unchanged.
+        return "AuthKit/1 (Macintosh; OS X 26.5.2) (com.apple.dt.Xcode/26.0)"
     }
 
     func sendAuthenticationRequest(parameters requestParameters: [String: Any], anisetteData: ALTAnisetteData, completionHandler: @escaping (Result<[String: Any], Error>) -> Void)
@@ -456,25 +440,7 @@ private extension ALTAppleAPI
             request.httpBody = bodyData
             httpHeaders.forEach { request.addValue($0.value, forHTTPHeaderField: $0.key) }
             
-            let dataTask = self.session.dataTask(with: request) { (data, response, error) in
-                do
-                {
-                    if let error = error { throw error }
-                    guard let data = data else
-                    {
-                        throw self.authenticationResponseError(operation: operation, response: response, underlyingError: URLError(.badServerResponse))
-                    }
-
-                    let dictionary = try self.authenticationServiceDictionary(from: data, operation: operation, response: response)
-                    completionHandler(.success(dictionary))
-                }
-                catch
-                {
-                    completionHandler(.failure(error))
-                }
-            }
-            
-            dataTask.resume()
+            self.sendGSARequest(request, operation: operation, completionHandler: completionHandler)
         }
         catch
         {
@@ -487,6 +453,79 @@ private extension ALTAppleAPI
 // Internal visibility lets regression tests exercise the production parser without a live account.
 extension ALTAppleAPI
 {
+    func sendGSARequest(_ request: URLRequest, operation: String,
+                        makeSession: @escaping (URLSessionConfiguration) -> URLSession = { URLSession(configuration: $0) },
+                        schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+                            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: work)
+                        },
+                        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                        completionHandler: @escaping (Result<[String: Any], Error>) -> Void)
+    {
+        // Adapt AltSign PR #49 without replaying the whole login or any 2FA request.
+        // A 5xx does not prove Apple left the request unprocessed; retry only this GSA exchange.
+        let retryDelays: [TimeInterval] = [1, 2, 4, 8]
+        let deadline = uptime() + 60
+        let canRetry = ["init", "complete", "apptokens"].contains(operation)
+            && request.httpMethod == "POST"
+            && request.url?.scheme == "https"
+            && request.url?.host == "gsa.apple.com"
+            && request.url?.path == "/grandslam/GsService2"
+
+        func send(attempt: Int, previousError: Error? = nil)
+        {
+            let remaining = deadline - uptime()
+            guard remaining > 0 else {
+                completionHandler(.failure(previousError ?? URLError(.timedOut)))
+                return
+            }
+
+            // Do not inherit the shared session's connection pool, cookies or cached auth responses.
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.urlCache = nil
+            configuration.httpCookieStorage = nil
+            configuration.urlCredentialStorage = nil
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            configuration.timeoutIntervalForRequest = min(15, remaining)
+            configuration.timeoutIntervalForResource = min(15, remaining)
+            var attemptRequest = request
+            attemptRequest.timeoutInterval = min(15, remaining)
+            let session = makeSession(configuration)
+            session.dataTask(with: attemptRequest) { data, response, transportError in
+                session.finishTasksAndInvalidate()
+                // Timeouts, cancellation and transport failures are not evidence of a retryable response.
+                if let transportError = transportError {
+                    completionHandler(.failure(transportError))
+                    return
+                }
+
+                do
+                {
+                    guard let data = data else {
+                        throw self.authenticationResponseError(operation: operation, response: response,
+                                                               underlyingError: URLError(.badServerResponse))
+                    }
+                    let dictionary = try self.authenticationServiceDictionary(from: data, operation: operation, response: response)
+                    completionHandler(.success(dictionary))
+                }
+                catch
+                {
+                    let failure = error as NSError
+                    // Parse first: an explicit Apple error must win over an HTTP 5xx status.
+                    if canRetry, attempt < retryDelays.count,
+                       let http = response as? HTTPURLResponse, (500...599).contains(http.statusCode),
+                       failure.domain == ALTAppleAPIErrorDomain, failure.code == ALTAppleAPIError.Code.authenticationHandshakeFailed.rawValue,
+                       uptime() + retryDelays[attempt] < deadline
+                    {
+                        schedule(retryDelays[attempt]) { send(attempt: attempt + 1, previousError: error) }
+                        return
+                    }
+                    completionHandler(.failure(error))
+                }
+            }.resume()
+        }
+
+        send(attempt: 0)
+    }
 
     func validateAuthenticationHTTP(_ response: URLResponse?, operation: String) throws
     {
